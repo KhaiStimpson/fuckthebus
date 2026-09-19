@@ -24,7 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # enablement turns Pages on for the repo the first time this runs, so
+      # the site does not need a manual visit to repo settings.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # No build step - the game is static files served as they sit in the repo.
       - uses: actions/upload-pages-artifact@v3
