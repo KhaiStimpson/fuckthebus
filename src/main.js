@@ -159,14 +159,14 @@ function renderTable() {
     })
   );
 
-  // Card counts are public - that is the whole read on who is bluffing.
+  // Hands never change size, so the drink tally is the only public number.
   el('roster').replaceChildren(
     ...game.players.map((p) => {
       const li = document.createElement('li');
       li.className = game.hasGiven(p.id) ? 'given' : '';
       li.innerHTML =
         `<span class="who">${p.name}</span>` +
-        `<span class="count">${p.hand.length} card${p.hand.length === 1 ? '' : 's'}</span>` +
+        `<span class="count">${game.hasGiven(p.id) ? 'gave this card' : ''}</span>` +
         `<span class="drinks">${p.drinks}</span>`;
       return li;
     })
@@ -246,15 +246,15 @@ function render() {
       const losers = game.losers;
       el('over-note').textContent =
         losers.length === 1
-          ? `${losers[0].name} is left holding ${losers[0].hand.length} — they lose.`
-          : `Tied on ${losers[0].hand.length}: ${losers.map((p) => p.name).join(', ')}.`;
+          ? `${losers[0].name} took the most — ${losers[0].drinks} drinks.`
+          : `Tied on ${losers[0].drinks} drinks: ${losers.map((p) => p.name).join(', ')}.`;
       el('reveal-all').replaceChildren(
-        ...game.players.map((p) => {
+        ...game.standings.map((p) => {
           const block = document.createElement('div');
           block.className = `final${losers.includes(p) ? ' loser' : ''}`;
           const head = document.createElement('p');
           head.className = 'final-head';
-          head.textContent = `${p.name} · ${p.hand.length} left · ${p.drinks} drinks`;
+          head.textContent = `${p.name} · ${p.drinks} drink${p.drinks === 1 ? '' : 's'}`;
           const row = document.createElement('div');
           row.className = 'card-row';
           row.append(...p.hand.map((c) => cardEl(c, { small: true })));

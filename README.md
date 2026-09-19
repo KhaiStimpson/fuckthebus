@@ -12,14 +12,16 @@ anyone can tell someone to drink, claiming they hold that rank. **The claim is p
 talk &mdash; the app never asks what you are claiming and never stops you lying.** It holds
 everyone's hand for exactly one reason: to settle it when someone calls bullshit.
 
-- **Nobody calls it** &mdash; they drink. If you really had the card it is quietly spent;
-  if you were lying you keep everything and get away with it.
-- **They call it** &mdash; the app reveals the single card that settles the argument,
+- **Nobody calls it** &mdash; they drink, and nobody learns anything.
+- **They call it** &mdash; the app shows the single card that settles the argument,
   and nothing else in your hand.
-  - You had it: the challenger drinks double and you are rid of the card.
-  - You didn't: you drink double and keep the lot.
+  - You had it: the challenger drinks double.
+  - You didn't: you drink double.
 
-The pyramid runs out, and whoever is still holding the most cards loses.
+**Your five cards are yours for the whole game.** Nothing is ever spent, so a card you
+prove in a challenge stays in your hand &mdash; the table simply now knows you hold it.
+What moves is the drink tally, and when the pyramid runs out whoever took the most
+drinks is the loser.
 
 ## Passing the phone
 
@@ -27,8 +29,9 @@ Every look at a hand goes through a "pass the phone to X" gate, so nobody sees a
 else's cards. The deal walks each player through in turn; afterwards **Check my cards**
 reaches the same gate. Hands are removed from the page, not just hidden, when you tap away.
 
-Card counts and drink tallies stay public on the table &mdash; that is the only read you
-get on who is running out of real cards and starting to bluff.
+The drink tally stays public on the table. Everyone's hand is the same size all game, so
+the read on people comes from what they have already been caught doing &mdash; a card
+proved once is known for the rest of the round.
 
 ## Playing it
 
@@ -45,6 +48,7 @@ browsers refuse to load over `file://`.
   each &mdash; five rows up to seven players, four rows at eight.
 - Bottom row is worth 1 drink, each row up is worth one more.
 - One give per player per flipped card.
+- Hands are fixed at five from the deal. Cards are never spent or replaced.
 - The round is saved to `localStorage` on every action, so a locked screen or an
   accidental reload does not lose the game.
 

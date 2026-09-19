@@ -5,6 +5,11 @@
 // drink". The app never asks what you are claiming and never stops you lying.
 // It only holds everyone's hand so it can settle a challenge - and it reveals
 // exactly one card when it does, never the rest of your hand.
+//
+// Hands are dealt once and kept for the whole game. Nothing is ever spent, so
+// what you hold is fixed from the deal and the only thing that moves is the
+// drink tally. A card proved in a challenge stays in your hand - everyone now
+// simply knows you have it.
 
 import { createDeck, shuffle } from './deck.js';
 
@@ -148,11 +153,9 @@ export class PartyGame {
 
     target.drinks += value;
 
-    // Truthful gives quietly spend the card; a bluff that goes unchallenged
-    // costs the bluffer nothing but leaves them still holding everything.
-    const index = this.proofIndex(giverId);
-    const truthful = index !== -1;
-    if (truthful) giver.hand.splice(index, 1);
+    // Nothing is spent - the hand is fixed for the whole game. Whether the
+    // giver was telling the truth stays between them and the app.
+    const truthful = this.proofIndex(giverId) !== -1;
 
     this.note(`${target.name} drinks ${value} from ${giver.name}.`);
     this.gives.push({ giverId, targetId, challenged: false, truthful });
@@ -171,8 +174,9 @@ export class PartyGame {
     const index = this.proofIndex(giverId);
     const truthful = index !== -1;
     const penalty = value * 2;
-    // Reveal exactly the one card that settles it, never the whole hand.
-    const proof = truthful ? giver.hand.splice(index, 1)[0] : null;
+    // Show exactly the one card that settles it, never the rest of the hand,
+    // and leave it where it is - proving a card does not spend it.
+    const proof = truthful ? giver.hand[index] : null;
 
     if (truthful) {
       challenger.drinks += penalty;
@@ -203,20 +207,28 @@ export class PartyGame {
   finish() {
     if (this.phase !== 'table') return false;
     this.phase = 'over';
-    const most = Math.max(...this.players.map((p) => p.hand.length));
-    const losers = this.players.filter((p) => p.hand.length === most);
+    const most = this.worstScore;
+    const losers = this.losers;
     this.note(
       losers.length === 1
-        ? `${losers[0].name} is left holding ${most} - they lose.`
-        : `Tied on ${most} cards: ${losers.map((p) => p.name).join(', ')}.`
+        ? `${losers[0].name} took the most - ${most} drinks.`
+        : `Tied on ${most} drinks: ${losers.map((p) => p.name).join(', ')}.`
     );
     return true;
   }
 
+  get worstScore() {
+    return this.players.length ? Math.max(...this.players.map((p) => p.drinks)) : 0;
+  }
+
+  // Nobody runs out of cards any more, so the drink tally is what settles it.
   get losers() {
     if (!this.players.length) return [];
-    const most = Math.max(...this.players.map((p) => p.hand.length));
-    return this.players.filter((p) => p.hand.length === most);
+    return this.players.filter((p) => p.drinks === this.worstScore);
+  }
+
+  get standings() {
+    return [...this.players].sort((a, b) => b.drinks - a.drinks);
   }
 
   note(text) {
