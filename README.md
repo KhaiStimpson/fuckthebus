@@ -16,6 +16,8 @@ which browsers refuse to load over `file://`.
 
 Pushes to the default branch publish the site to GitHub Pages via
 `.github/workflows/pages.yml` &mdash; no build step, the repo is uploaded as-is.
+Pages must be switched on once under **Settings &rarr; Pages** with the source set to
+**GitHub Actions**; the workflow token is not allowed to create the site itself.
 
 ## Rules
 
