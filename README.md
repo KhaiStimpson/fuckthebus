@@ -14,6 +14,9 @@ npx http-server -p 8080 .
 Opening `index.html` straight off disk will not work: the code is split into ES modules,
 which browsers refuse to load over `file://`.
 
+Pushes to the default branch publish the site to GitHub Pages via
+`.github/workflows/pages.yml` &mdash; no build step, the repo is uploaded as-is.
+
 ## Rules
 
 The table game is built around handing out drinks, which does not survive the trip to
