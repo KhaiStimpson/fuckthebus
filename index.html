@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fuck the Bus</title>
+<meta name="description" content="Single-player Fuck the Bus: four guesses, a pyramid, and a row of cards that keeps sending you back to the start.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Fuck the Bus</h1>
+  <dl class="scoreboard">
+    <div><dt>Sips</dt><dd id="stat-sips">0</dd></div>
+    <div><dt>Phase</dt><dd id="stat-phase">Guesses</dd></div>
+    <div><dt>Best run</dt><dd id="stat-best">&mdash;</dd></div>
+  </dl>
+</header>
+
+<main>
+  <section class="stage" id="stage">
+    <p class="phase-prompt" id="prompt">Red or black?</p>
+    <p class="phase-hint" id="hint">Guess the colour of your first card. A miss costs 1 sip.</p>
+
+    <div class="board" id="board-guess">
+      <div class="card-row" id="hand-row" aria-label="Your four cards"></div>
+    </div>
+
+    <div class="board hidden" id="board-pyramid">
+      <div class="pyramid" id="pyramid" aria-label="Pyramid"></div>
+      <p class="board-label">Your hand</p>
+      <div class="card-row small" id="pyramid-hand" aria-label="Your hand"></div>
+    </div>
+
+    <div class="board hidden" id="board-bus">
+      <div class="card-row" id="bus-row" aria-label="The bus row"></div>
+      <p class="bus-meta" id="bus-meta"></p>
+    </div>
+
+    <div class="board hidden" id="board-done">
+      <h2 id="done-title">Off the bus</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+
+    <div class="controls" id="controls"></div>
+  </section>
+
+  <aside class="log-panel">
+    <h2>Table talk</h2>
+    <ol class="log" id="log" aria-live="polite"></ol>
+    <button type="button" class="btn ghost" id="restart">New run</button>
+    <details class="rules">
+      <summary>Rules</summary>
+      <ol>
+        <li><strong>Four guesses.</strong> Red or black (1 sip), higher or lower (2), inside or outside (3), then the suit (4). Ace is high; a tie loses.</li>
+        <li><strong>Pyramid.</strong> Flip all ten cards. Every card matching a rank in your hand shortens the bus row by that row's value &mdash; 1 at the bottom, 4 at the apex.</li>
+        <li><strong>The bus.</strong> Flip the row one card at a time. Number cards pass. J, Q, K, A cost 1&ndash;4 sips and send you back to a freshly dealt row. Clear the row to get off.</li>
+      </ol>
+    </details>
+  </aside>
+</main>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
