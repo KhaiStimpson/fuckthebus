@@ -1,245 +1,266 @@
-// Game rules for the single-player version of Fuck the Bus.
+// Rules for the pass-and-play party game. No DOM access in here, so the rules
+// can be driven headlessly.
 //
-// Three phases:
-//   1. guess   - the four classic guesses, each miss costs sips
-//   2. pyramid - matches against your four cards shorten the bus row
-//   3. bus     - flip a row of cards; a face card or ace sends you back to the start
-//
-// The class holds all state and exposes one method per player action. It never
-// touches the DOM so the rules stay testable on their own.
+// The claim itself is pure table talk: you tap your name to say "I have this,
+// drink". The app never asks what you are claiming and never stops you lying.
+// It only holds everyone's hand so it can settle a challenge - and it reveals
+// exactly one card when it does, never the rest of your hand.
 
-import { createDeck, shuffle, isFaceOrAce, busPenalty } from './deck.js';
+import { createDeck, shuffle } from './deck.js';
 
-export const GUESS_STEPS = [
-  { key: 'color', prompt: 'Red or black?', penalty: 1, options: ['red', 'black'] },
-  { key: 'highLow', prompt: 'Higher or lower?', penalty: 2, options: ['higher', 'lower'] },
-  { key: 'inOut', prompt: 'Inside or outside?', penalty: 3, options: ['inside', 'outside'] },
-  { key: 'suit', prompt: 'Pick the suit', penalty: 4, options: ['spades', 'hearts', 'diamonds', 'clubs'] },
-];
+export const HAND_SIZE = 5;
+export const MIN_PLAYERS = 2;
+export const MAX_PLAYERS = 8;
+export const DECK_SIZE = 52;
 
-// Bottom row is worth 1, apex is worth 4 - the usual pyramid values.
-export const PYRAMID_ROWS = [
-  { size: 4, value: 1 },
-  { size: 3, value: 2 },
-  { size: 2, value: 3 },
-  { size: 1, value: 4 },
-];
+// Bottom row is 1 drink and each row up is worth one more. Deal the biggest
+// pyramid the deck can still cover once everyone has their five cards.
+export function pyramidRowsFor(playerCount) {
+  for (let rows = 5; rows >= 3; rows--) {
+    const cards = (rows * (rows + 1)) / 2;
+    if (cards + playerCount * HAND_SIZE <= DECK_SIZE) return rows;
+  }
+  return 3;
+}
 
-// A full 10-card row clears about 3% of the time, which is authentic but
-// unplayable solo. Six cards keeps it a real gamble (~12% a run) and the
-// pyramid can pull it down to three.
-export const MAX_BUS_LENGTH = 6;
-export const MIN_BUS_LENGTH = 3;
-
-export class Game {
+export class PartyGame {
   constructor({ random = Math.random } = {}) {
     this.random = random;
-    this.reset();
-  }
-
-  reset() {
-    this.deck = shuffle(createDeck(), this.random);
-    this.phase = 'guess';
-    this.hand = [];
-    this.guessStep = 0;
-    this.guessResults = [];
-    this.penalties = 0;
+    this.phase = 'setup';
+    this.players = [];
     this.pyramid = [];
-    this.pyramidFlipped = 0;
-    this.busRow = [];
-    this.busPosition = 0;
-    this.busAttempts = 1;
-    this.busFlips = 0;
-    this.busLength = MAX_BUS_LENGTH;
     this.log = [];
+    this.currentSlot = null;
+    this.gives = [];
+    this.pending = null;
+    this.lastResolution = null;
   }
 
-  // The deck is small enough that a long bus run can drain it, so top it up
-  // with a freshly shuffled deck rather than ending the game early.
-  draw() {
-    if (this.deck.length === 0) {
-      this.deck = shuffle(createDeck(), this.random);
-      this.note('Deck ran out - shuffling a fresh one.');
+  // --- setup ------------------------------------------------------------
+
+  start(names) {
+    const clean = names.map((n) => n.trim()).filter(Boolean);
+    if (clean.length < MIN_PLAYERS || clean.length > MAX_PLAYERS) return false;
+
+    const deck = shuffle(createDeck(), this.random);
+    this.players = clean.map((name, id) => ({
+      id,
+      name,
+      hand: deck.splice(0, HAND_SIZE),
+      drinks: 0,
+      seen: false,
+    }));
+
+    const rows = pyramidRowsFor(this.players.length);
+    // Row 0 is the wide bottom row worth 1; the apex is worth `rows`.
+    this.pyramid = Array.from({ length: rows }, (_, i) => ({
+      value: i + 1,
+      cards: Array.from({ length: rows - i }, () => ({ card: deck.pop(), revealed: false })),
+    }));
+
+    this.phase = 'deal';
+    this.log = [`${this.players.length} players, ${rows}-row pyramid. Pass the phone around.`];
+    return true;
+  }
+
+  get dealTarget() {
+    return this.players.find((p) => !p.seen) ?? null;
+  }
+
+  markSeen(playerId) {
+    const player = this.players[playerId];
+    if (player) player.seen = true;
+    if (!this.dealTarget && this.phase === 'deal') this.phase = 'table';
+  }
+
+  // --- the pyramid ------------------------------------------------------
+
+  get flipOrder() {
+    const slots = [];
+    this.pyramid.forEach((row, rowIndex) => {
+      row.cards.forEach((slot, cardIndex) => slots.push({ rowIndex, cardIndex, slot, value: row.value }));
+    });
+    return slots;
+  }
+
+  get cardsLeft() {
+    return this.flipOrder.filter((s) => !s.slot.revealed).length;
+  }
+
+  flipNext() {
+    if (this.phase !== 'table') return null;
+    const next = this.flipOrder.find((s) => !s.slot.revealed);
+    if (!next) return null;
+
+    next.slot.revealed = true;
+    this.currentSlot = next;
+    this.gives = [];
+    this.note(`${next.slot.card.rank}${next.slot.card.symbol} is up - worth ${next.value}.`);
+
+    if (this.cardsLeft === 0) this.note('Last card of the pyramid.');
+    return next;
+  }
+
+  get currentCard() {
+    return this.currentSlot?.slot.card ?? null;
+  }
+
+  get currentValue() {
+    return this.currentSlot?.value ?? 0;
+  }
+
+  // One give per player per flipped card, so nobody can machine-gun the table.
+  hasGiven(playerId) {
+    return this.gives.some((g) => g.giverId === playerId);
+  }
+
+  canGive(playerId) {
+    return Boolean(this.currentSlot) && !this.hasGiven(playerId);
+  }
+
+  // --- giving and challenging -------------------------------------------
+
+  give(giverId, targetId) {
+    if (this.phase !== 'table' || !this.currentSlot) return false;
+    if (giverId === targetId || !this.canGive(giverId)) return false;
+    this.pending = { giverId, targetId, value: this.currentValue };
+    this.phase = 'respond';
+    return true;
+  }
+
+  cancelGive() {
+    this.pending = null;
+    if (this.phase === 'respond') this.phase = 'table';
+  }
+
+  // Does the giver actually hold the flipped rank? Only ever consulted here.
+  proofIndex(playerId) {
+    const rank = this.currentCard?.rank;
+    if (!rank) return -1;
+    return this.players[playerId].hand.findIndex((c) => c.rank === rank);
+  }
+
+  accept() {
+    if (this.phase !== 'respond' || !this.pending) return null;
+    const { giverId, targetId, value } = this.pending;
+    const giver = this.players[giverId];
+    const target = this.players[targetId];
+
+    target.drinks += value;
+
+    // Truthful gives quietly spend the card; a bluff that goes unchallenged
+    // costs the bluffer nothing but leaves them still holding everything.
+    const index = this.proofIndex(giverId);
+    const truthful = index !== -1;
+    if (truthful) giver.hand.splice(index, 1);
+
+    this.note(`${target.name} drinks ${value} from ${giver.name}.`);
+    this.gives.push({ giverId, targetId, challenged: false, truthful });
+    this.pending = null;
+    this.lastResolution = null;
+    this.phase = 'table';
+    return { truthful, value };
+  }
+
+  challenge() {
+    if (this.phase !== 'respond' || !this.pending) return null;
+    const { giverId, targetId, value } = this.pending;
+    const giver = this.players[giverId];
+    const challenger = this.players[targetId];
+
+    const index = this.proofIndex(giverId);
+    const truthful = index !== -1;
+    const penalty = value * 2;
+    // Reveal exactly the one card that settles it, never the whole hand.
+    const proof = truthful ? giver.hand.splice(index, 1)[0] : null;
+
+    if (truthful) {
+      challenger.drinks += penalty;
+      this.note(`${challenger.name} called it and was wrong - ${penalty} drinks.`);
+    } else {
+      giver.drinks += penalty;
+      this.note(`${giver.name} was bluffing - ${penalty} drinks.`);
     }
-    return this.deck.pop();
+
+    this.gives.push({ giverId, targetId, challenged: true, truthful });
+    this.lastResolution = { giverId, targetId, truthful, penalty, proof };
+    this.pending = null;
+    this.phase = 'reveal';
+    return this.lastResolution;
+  }
+
+  dismissReveal() {
+    this.lastResolution = null;
+    if (this.phase === 'reveal') this.phase = 'table';
+  }
+
+  // --- finishing --------------------------------------------------------
+
+  get canFinish() {
+    return this.cardsLeft === 0 && Boolean(this.currentSlot);
+  }
+
+  finish() {
+    if (this.phase !== 'table') return false;
+    this.phase = 'over';
+    const most = Math.max(...this.players.map((p) => p.hand.length));
+    const losers = this.players.filter((p) => p.hand.length === most);
+    this.note(
+      losers.length === 1
+        ? `${losers[0].name} is left holding ${most} - they lose.`
+        : `Tied on ${most} cards: ${losers.map((p) => p.name).join(', ')}.`
+    );
+    return true;
+  }
+
+  get losers() {
+    if (!this.players.length) return [];
+    const most = Math.max(...this.players.map((p) => p.hand.length));
+    return this.players.filter((p) => p.hand.length === most);
   }
 
   note(text) {
     this.log.push(text);
   }
 
-  get currentGuess() {
-    return GUESS_STEPS[this.guessStep] ?? null;
-  }
+  // --- persistence ------------------------------------------------------
+  // A party game lives on one phone that will get locked, dropped and
+  // answered mid-round, so the whole state round-trips through localStorage.
 
-  get guessesCorrect() {
-    return this.guessResults.filter((r) => r.correct).length;
-  }
-
-  // --- Phase 1: the four guesses ------------------------------------------
-
-  submitGuess(choice) {
-    if (this.phase !== 'guess') return null;
-    const step = this.currentGuess;
-    if (!step || !step.options.includes(choice)) return null;
-
-    const card = this.draw();
-    const correct = this.checkGuess(step.key, choice, card);
-    this.hand.push(card);
-
-    if (!correct) this.penalties += step.penalty;
-    const result = { step: step.key, choice, card, correct, penalty: correct ? 0 : step.penalty };
-    this.guessResults.push(result);
-    this.note(
-      correct
-        ? `${step.prompt} ${choice} - right, ${card.rank}${card.symbol}.`
-        : `${step.prompt} ${choice} - wrong, ${card.rank}${card.symbol}. ${step.penalty} sip${step.penalty === 1 ? '' : 's'}.`
-    );
-
-    this.guessStep += 1;
-    if (this.guessStep >= GUESS_STEPS.length) this.startPyramid();
-    return result;
-  }
-
-  checkGuess(key, choice, card) {
-    switch (key) {
-      case 'color':
-        return card.color === choice;
-      case 'highLow': {
-        // A tie counts against you, same as at a real table.
-        const first = this.hand[0].value;
-        if (card.value === first) return false;
-        return choice === 'higher' ? card.value > first : card.value < first;
-      }
-      case 'inOut': {
-        const low = Math.min(this.hand[0].value, this.hand[1].value);
-        const high = Math.max(this.hand[0].value, this.hand[1].value);
-        // Matching either bookend is not inside and not outside - it loses.
-        if (card.value === low || card.value === high) return false;
-        const inside = card.value > low && card.value < high;
-        return choice === 'inside' ? inside : !inside;
-      }
-      case 'suit':
-        return card.suit === choice;
-      default:
-        return false;
-    }
-  }
-
-  // --- Phase 2: the pyramid ----------------------------------------------
-
-  startPyramid() {
-    this.phase = 'pyramid';
-    this.pyramid = PYRAMID_ROWS.map((row, rowIndex) => ({
-      value: row.value,
-      cards: Array.from({ length: row.size }, () => ({
-        card: this.draw(),
-        revealed: false,
-        matched: false,
-        rowIndex,
-      })),
-    }));
-    // Hand cards get spent on matches, so track which are still live.
-    this.handSpent = this.hand.map(() => false);
-    this.note(`Guesses done: ${this.guessesCorrect}/4. Pyramid time - every match shortens the bus.`);
-  }
-
-  get pyramidReduction() {
-    return this.pyramid.reduce(
-      (total, row) => total + row.cards.filter((slot) => slot.matched).length * row.value,
-      0
-    );
-  }
-
-  get pyramidTotal() {
-    return PYRAMID_ROWS.reduce((n, row) => n + row.size, 0);
-  }
-
-  flipPyramid(rowIndex, cardIndex) {
-    if (this.phase !== 'pyramid') return null;
-    const slot = this.pyramid[rowIndex]?.cards[cardIndex];
-    if (!slot || slot.revealed) return null;
-
-    slot.revealed = true;
-    this.pyramidFlipped += 1;
-
-    // Spend the first unspent hand card of the same rank.
-    const handIndex = this.hand.findIndex(
-      (card, i) => !this.handSpent[i] && card.rank === slot.card.rank
-    );
-    if (handIndex !== -1) {
-      this.handSpent[handIndex] = true;
-      slot.matched = true;
-      slot.handIndex = handIndex;
-      const value = this.pyramid[rowIndex].value;
-      this.note(
-        `${slot.card.rank}${slot.card.symbol} matches your ${this.hand[handIndex].rank}${this.hand[handIndex].symbol} - bus row shorter by ${value}.`
-      );
-    }
-
-    if (this.pyramidFlipped >= this.pyramidTotal) this.startBus();
-    return slot;
-  }
-
-  // --- Phase 3: riding the bus -------------------------------------------
-
-  startBus() {
-    this.phase = 'bus';
-    this.busLength = Math.max(MIN_BUS_LENGTH, MAX_BUS_LENGTH - this.pyramidReduction);
-    this.dealBusRow();
-    this.note(`Riding the bus: ${this.busLength} card${this.busLength === 1 ? '' : 's'} to clear.`);
-  }
-
-  dealBusRow() {
-    this.busRow = Array.from({ length: this.busLength }, () => ({
-      card: this.draw(),
-      revealed: false,
-    }));
-    this.busPosition = 0;
-  }
-
-  flipBus() {
-    if (this.phase !== 'bus') return null;
-    const slot = this.busRow[this.busPosition];
-    if (!slot || slot.revealed) return null;
-
-    slot.revealed = true;
-    this.busFlips += 1;
-
-    if (!isFaceOrAce(slot.card)) {
-      this.busPosition += 1;
-      if (this.busPosition >= this.busRow.length) {
-        this.phase = 'done';
-        this.note(`Clear! Off the bus in ${this.busFlips} flips.`);
-        return { card: slot.card, survived: true, escaped: true, penalty: 0 };
-      }
-      return { card: slot.card, survived: true, escaped: false, penalty: 0 };
-    }
-
-    const penalty = busPenalty(slot.card);
-    this.penalties += penalty;
-    this.busAttempts += 1;
-    this.note(
-      `${slot.card.rank}${slot.card.symbol} - ${penalty} sip${penalty === 1 ? '' : 's'} and back to the start. Attempt ${this.busAttempts}.`
-    );
-    return { card: slot.card, survived: false, escaped: false, penalty, reset: true };
-  }
-
-  // Called by the UI after it has shown the losing card, so the reset reads
-  // as a consequence rather than happening mid-animation.
-  resetBusRow() {
-    if (this.phase !== 'bus') return;
-    this.dealBusRow();
-  }
-
-  get summary() {
+  toJSON() {
     return {
-      penalties: this.penalties,
-      guessesCorrect: this.guessesCorrect,
-      pyramidReduction: this.pyramidReduction,
-      busLength: this.busLength,
-      busFlips: this.busFlips,
-      busAttempts: this.busAttempts,
+      phase: this.phase,
+      players: this.players,
+      pyramid: this.pyramid,
+      log: this.log,
+      gives: this.gives,
+      pending: this.pending,
+      lastResolution: this.lastResolution,
+      currentSlotRef: this.currentSlot
+        ? { rowIndex: this.currentSlot.rowIndex, cardIndex: this.currentSlot.cardIndex }
+        : null,
     };
+  }
+
+  static fromJSON(data) {
+    const game = new PartyGame();
+    if (!data || !Array.isArray(data.players) || !data.players.length) return null;
+    Object.assign(game, {
+      phase: data.phase,
+      players: data.players,
+      pyramid: data.pyramid,
+      log: data.log ?? [],
+      gives: data.gives ?? [],
+      pending: data.pending ?? null,
+      lastResolution: data.lastResolution ?? null,
+    });
+    if (data.currentSlotRef) {
+      const { rowIndex, cardIndex } = data.currentSlotRef;
+      const row = game.pyramid[rowIndex];
+      if (row) {
+        game.currentSlot = { rowIndex, cardIndex, slot: row.cards[cardIndex], value: row.value };
+      }
+    }
+    return game;
   }
 }

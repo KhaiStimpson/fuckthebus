@@ -49,17 +49,3 @@ export function shuffle(deck, random = Math.random) {
   }
   return deck;
 }
-
-export function cardLabel(card) {
-  return `${card.rank}${card.symbol}`;
-}
-
-// A bus row only lets you past the number cards.
-export function isFaceOrAce(card) {
-  return card.value >= 11;
-}
-
-// J = 1, Q = 2, K = 3, A = 4.
-export function busPenalty(card) {
-  return isFaceOrAce(card) ? card.value - 10 : 0;
-}

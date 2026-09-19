@@ -1,383 +1,410 @@
-// UI layer: renders game state and turns clicks and keys into game actions.
+// UI layer: screens, the pass-the-phone privacy gates, and the challenge reveal.
 
-import { Game, GUESS_STEPS } from './game.js';
-import { SUITS } from './deck.js';
+import { PartyGame, MIN_PLAYERS, MAX_PLAYERS } from './game.js';
 
-const BEST_KEY = 'fuckthebus.best';
-const REVEAL_MS = 420;   // long enough to read the card that just landed
-const BUS_RESET_MS = 950; // let a losing card sink in before the row is redealt
+const SAVE_KEY = 'fuckthebus.party';
 
 const el = (id) => document.getElementById(id);
-
-const dom = {
-  sips: el('stat-sips'),
-  phase: el('stat-phase'),
-  best: el('stat-best'),
-  prompt: el('prompt'),
-  hint: el('hint'),
-  controls: el('controls'),
-  log: el('log'),
-  restart: el('restart'),
-  boards: {
-    guess: el('board-guess'),
-    pyramid: el('board-pyramid'),
-    bus: el('board-bus'),
-    done: el('board-done'),
-  },
-  handRow: el('hand-row'),
-  pyramid: el('pyramid'),
-  pyramidHand: el('pyramid-hand'),
-  busRow: el('bus-row'),
-  busMeta: el('bus-meta'),
-  doneTitle: el('done-title'),
-  summary: el('summary'),
+const screens = {
+  setup: el('screen-setup'),
+  pass: el('screen-pass'),
+  hand: el('screen-hand'),
+  table: el('screen-table'),
+  give: el('screen-give'),
+  respond: el('screen-respond'),
+  reveal: el('screen-reveal'),
+  over: el('screen-over'),
 };
 
-const SUIT_BY_KEY = Object.fromEntries(SUITS.map((s) => [s.key, s]));
-const SUIT_NAMES = { spades: 'Spades', hearts: 'Hearts', diamonds: 'Diamonds', clubs: 'Clubs' };
+let game = new PartyGame();
+let names = ['', ''];
+// Where the privacy gate should go once the right person confirms: the deal
+// walk-through, or a one-off peek from the table.
+let passIntent = null;
+let handOwner = null;
+let giverId = null;
 
-const GUESS_HINTS = [
-  'Guess the colour of your first card. A miss costs 1 sip.',
-  'Higher or lower than your first card? Ace is high, and a tie loses. 2 sips.',
-  'Inside or outside your first two cards? Landing on either one loses. 3 sips.',
-  'Name the suit of your last card. 4 sips.',
-];
+// --- storage (best effort: private mode and blocked storage must not break) --
 
-let game = new Game();
-let busy = false;
-let keyHandlers = [];
-
-// --- card rendering -----------------------------------------------------
-
-function cardEl(card, { revealed = false, onFlip = null, classes = [] } = {}) {
-  const node = document.createElement(onFlip ? 'button' : 'div');
-  node.className = ['card', ...classes].join(' ');
-  if (revealed) node.classList.add('revealed');
-
-  const inner = document.createElement('div');
-  inner.className = 'card-inner';
-
-  const back = document.createElement('div');
-  back.className = 'card-back';
-
-  const front = document.createElement('div');
-  front.className = `card-front ${card ? card.color : ''}`;
-  if (card) {
-    front.innerHTML =
-      `<span class="rank">${card.rank}</span><span class="suit">${card.symbol}</span>`;
+function save() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(game.toJSON()));
+  } catch {
+    /* ignore */
   }
+}
 
-  inner.append(back, front);
-  node.append(inner);
+function clearSave() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
+function restore() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const revived = PartyGame.fromJSON(JSON.parse(raw));
+    if (!revived || revived.phase === 'setup' || revived.phase === 'over') return false;
+    game = revived;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// --- cards ---------------------------------------------------------------
+
+function cardEl(card, { small = false } = {}) {
+  const node = document.createElement('div');
+  node.className = `card${small ? ' small' : ''}`;
+  node.innerHTML =
+    `<span class="rank ${card.color}">${card.rank}</span><span class="suit ${card.color}">${card.symbol}</span>`;
+  node.setAttribute('role', 'img');
+  node.setAttribute('aria-label', `${card.rank} of ${card.suit}`);
+  return node;
+}
+
+function faceDownEl({ onFlip = null, next = false } = {}) {
+  const node = document.createElement(onFlip ? 'button' : 'div');
+  node.className = `card back${next ? ' next' : ''}`;
   if (onFlip) {
     node.type = 'button';
-    node.classList.add('clickable');
     node.addEventListener('click', onFlip);
-    node.setAttribute('aria-label', revealed && card ? `${card.rank} of ${SUIT_NAMES[card.suit]}` : 'Face-down card, flip it');
-  } else if (revealed && card) {
-    node.setAttribute('role', 'img');
-    node.setAttribute('aria-label', `${card.rank} of ${SUIT_NAMES[card.suit]}`);
+    node.setAttribute('aria-label', 'Face-down pyramid card');
   }
   return node;
 }
 
-// --- shared chrome ------------------------------------------------------
+// --- setup ---------------------------------------------------------------
 
-const PHASE_LABEL = { guess: 'Guesses', pyramid: 'Pyramid', bus: 'The bus', done: 'Done' };
+function renderSetup() {
+  const wrap = el('names');
+  wrap.replaceChildren(
+    ...names.map((value, i) => {
+      const row = document.createElement('div');
+      row.className = 'name-row';
 
-function renderChrome() {
-  dom.sips.textContent = game.penalties;
-  dom.phase.textContent = PHASE_LABEL[game.phase];
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = value;
+      input.placeholder = `Player ${i + 1}`;
+      input.maxLength = 14;
+      input.autocomplete = 'off';
+      input.addEventListener('input', () => {
+        names[i] = input.value;
+        el('start').disabled = !validNames().length || validNames().length < MIN_PLAYERS;
+      });
+      row.append(input);
 
-  for (const [name, node] of Object.entries(dom.boards)) {
-    node.classList.toggle('hidden', name !== game.phase);
-  }
+      if (names.length > MIN_PLAYERS) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn ghost tiny';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => {
+          names.splice(i, 1);
+          renderSetup();
+        });
+        row.append(remove);
+      }
+      return row;
+    })
+  );
 
-  dom.log.replaceChildren(
-    ...game.log.slice(-8).map((line) => {
+  el('add-player').disabled = names.length >= MAX_PLAYERS;
+  el('setup-warn').textContent = '';
+  el('start').disabled = validNames().length < MIN_PLAYERS;
+}
+
+function validNames() {
+  return names.map((n) => n.trim()).filter(Boolean);
+}
+
+// --- the table -----------------------------------------------------------
+
+function renderTable() {
+  const card = game.currentCard;
+  el('current-label').textContent = card
+    ? `${card.rank}${card.symbol} — worth ${game.currentValue}`
+    : game.cardsLeft
+      ? 'Flip the first card'
+      : 'Pyramid finished';
+  el('current-card').replaceChildren(...(card ? [cardEl(card)] : []));
+
+  // Drawn top row first so the apex sits at the top of the screen.
+  const pyramid = el('pyramid');
+  pyramid.replaceChildren(
+    ...[...game.pyramid].reverse().map((row) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'pyramid-row';
+
+      const value = document.createElement('span');
+      value.className = 'row-value';
+      value.textContent = row.value;
+      rowEl.append(value);
+
+      row.cards.forEach((slot) => {
+        rowEl.append(slot.revealed ? cardEl(slot.card, { small: true }) : faceDownEl());
+      });
+
+      // Mirror the value label on the right so each row stays centred.
+      const spacer = document.createElement('span');
+      spacer.className = 'row-value';
+      spacer.setAttribute('aria-hidden', 'true');
+      rowEl.append(spacer);
+      return rowEl;
+    })
+  );
+
+  // Card counts are public - that is the whole read on who is bluffing.
+  el('roster').replaceChildren(
+    ...game.players.map((p) => {
+      const li = document.createElement('li');
+      li.className = game.hasGiven(p.id) ? 'given' : '';
+      li.innerHTML =
+        `<span class="who">${p.name}</span>` +
+        `<span class="count">${p.hand.length} card${p.hand.length === 1 ? '' : 's'}</span>` +
+        `<span class="drinks">${p.drinks}</span>`;
+      return li;
+    })
+  );
+
+  const done = game.cardsLeft === 0;
+  el('flip').disabled = done;
+  el('flip').textContent = done ? 'No cards left' : 'Flip next card';
+  el('open-give').disabled = !game.currentCard;
+  el('finish').classList.toggle('hidden', !game.canFinish);
+
+  el('log').replaceChildren(
+    ...game.log.slice(-6).map((line) => {
       const li = document.createElement('li');
       li.textContent = line;
       return li;
     })
   );
-  dom.log.scrollTop = dom.log.scrollHeight;
 }
 
-function button(label, { primary = false, key = null, pip = null, onClick }) {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = `btn${primary ? ' primary' : ''}`;
-  if (pip) btn.insertAdjacentHTML('afterbegin', `<span class="pip ${pip.color}">${pip.symbol}</span>`);
-  btn.insertAdjacentHTML('beforeend', `<span>${label}</span>`);
-  if (key) btn.insertAdjacentHTML('beforeend', `<span class="key">${key}</span>`);
-  btn.addEventListener('click', () => { if (!busy) onClick(); });
-  if (key) keyHandlers.push({ key: key.toLowerCase(), run: () => { if (!busy) onClick(); } });
-  return btn;
+// --- screen routing ------------------------------------------------------
+
+function show(name) {
+  for (const [key, node] of Object.entries(screens)) node.classList.toggle('hidden', key !== name);
+  window.scrollTo(0, 0);
 }
-
-function setControls(buttons) {
-  keyHandlers = [];
-  dom.controls.replaceChildren();
-  for (const make of buttons) dom.controls.append(make());
-}
-
-// --- phase 1: guesses ---------------------------------------------------
-
-function renderGuess() {
-  const step = game.currentGuess;
-  dom.prompt.textContent = step.prompt;
-  dom.hint.textContent = GUESS_HINTS[game.guessStep];
-
-  dom.handRow.replaceChildren(
-    ...Array.from({ length: GUESS_STEPS.length }, (_, i) => {
-      const result = game.guessResults[i];
-      return cardEl(result?.card ?? null, {
-        revealed: Boolean(result),
-        classes: result ? [result.correct ? 'match' : 'hit'] : [],
-      });
-    })
-  );
-
-  const options = step.options.map((option, i) => () =>
-    button(labelFor(step.key, option), {
-      primary: step.key !== 'suit',
-      key: String(i + 1),
-      pip: step.key === 'color'
-        ? { symbol: option === 'red' ? '♥' : '♠', color: option }
-        : step.key === 'suit'
-          ? { symbol: SUIT_BY_KEY[option].symbol, color: SUIT_BY_KEY[option].color }
-          : null,
-      onClick: () => takeGuess(option),
-    })
-  );
-  setControls(options);
-}
-
-function labelFor(stepKey, option) {
-  if (stepKey === 'suit') return SUIT_NAMES[option];
-  return option.charAt(0).toUpperCase() + option.slice(1);
-}
-
-function takeGuess(option) {
-  busy = true;
-  const wasStep = game.guessStep;
-  game.submitGuess(option);
-
-  // Re-render the hand so the new card flips, then move on to the next prompt.
-  const pending = game.phase;
-  renderChrome();
-  if (pending === 'guess') {
-    renderGuess();
-  } else {
-    // The board swapped to the pyramid, but show the fourth card first.
-    dom.boards.guess.classList.remove('hidden');
-    dom.boards.pyramid.classList.add('hidden');
-    dom.phase.textContent = PHASE_LABEL.guess;
-    dom.handRow.replaceChildren(
-      ...game.guessResults.map((r) => cardEl(r.card, { revealed: true, classes: [r.correct ? 'match' : 'hit'] }))
-    );
-    dom.prompt.textContent = `${game.guessesCorrect} of 4 right.`;
-    dom.hint.textContent = `${game.penalties} sip${game.penalties === 1 ? '' : 's'} so far.`;
-    dom.controls.replaceChildren();
-  }
-  setTimeout(() => {
-    busy = false;
-    if (pending !== 'guess') render();
-  }, wasStep === GUESS_STEPS.length - 1 ? REVEAL_MS + 700 : REVEAL_MS);
-}
-
-// --- phase 2: pyramid ---------------------------------------------------
-
-function renderPyramid() {
-  const left = game.pyramidTotal - game.pyramidFlipped;
-  dom.prompt.textContent = 'Work the pyramid';
-  dom.hint.textContent = `Flip all ten cards. A rank you hold shortens the bus row by that row's value. ${left} left, ${game.pyramidReduction} off the row so far.`;
-
-  dom.pyramid.replaceChildren(
-    ...game.pyramid.map((row, rowIndex) => {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'pyramid-row';
-      rowEl.append(
-        ...row.cards.map((slot, cardIndex) =>
-          cardEl(slot.card, {
-            revealed: slot.revealed,
-            classes: slot.matched ? ['match'] : [],
-            onFlip: slot.revealed ? null : () => flipPyramid(rowIndex, cardIndex),
-          })
-        )
-      );
-      return rowEl;
-    })
-  );
-
-  dom.pyramidHand.replaceChildren(
-    ...game.hand.map((card, i) =>
-      cardEl(card, { revealed: true, classes: game.handSpent[i] ? ['spent'] : [] })
-    )
-  );
-  setControls([]);
-}
-
-function flipPyramid(rowIndex, cardIndex) {
-  busy = true;
-  game.flipPyramid(rowIndex, cardIndex);
-  const moved = game.phase !== 'pyramid';
-  renderChrome();
-  renderPyramid();
-  setTimeout(() => {
-    busy = false;
-    if (moved) render();
-  }, moved ? REVEAL_MS + 500 : REVEAL_MS);
-}
-
-// --- phase 3: the bus ---------------------------------------------------
-
-function renderBus(lastHit = null) {
-  dom.prompt.textContent = 'Ride the bus';
-  dom.hint.textContent = 'Number cards pass. J, Q, K or A costs sips and you start over on a fresh row.';
-
-  dom.busRow.replaceChildren(
-    ...game.busRow.map((slot, i) => {
-      const isNext = i === game.busPosition && !slot.revealed;
-      const classes = [];
-      if (isNext) classes.push('current');
-      if (slot.revealed) classes.push(lastHit === i ? 'hit' : 'match');
-      return cardEl(slot.card, {
-        revealed: slot.revealed,
-        classes,
-        onFlip: isNext ? flipBus : null,
-      });
-    })
-  );
-
-  dom.busMeta.textContent =
-    `Row of ${game.busLength} · attempt ${game.busAttempts} · ${game.busFlips} flip${game.busFlips === 1 ? '' : 's'}`;
-
-  setControls([
-    () => button('Flip next', { primary: true, key: 'space', onClick: flipBus }),
-  ]);
-}
-
-function flipBus() {
-  busy = true;
-  const position = game.busPosition;
-  const result = game.flipBus();
-  if (!result) { busy = false; return; }
-
-  renderChrome();
-  renderBus(result.survived ? null : position);
-
-  if (result.reset) {
-    dom.hint.textContent = `${result.card.rank}${result.card.symbol} — ${result.penalty} sip${result.penalty === 1 ? '' : 's'}. Back to the start.`;
-    setTimeout(() => {
-      game.resetBusRow();
-      busy = false;
-      render();
-    }, BUS_RESET_MS);
-    return;
-  }
-
-  setTimeout(() => {
-    busy = false;
-    if (result.escaped) render();
-  }, result.escaped ? REVEAL_MS + 400 : REVEAL_MS);
-}
-
-// --- done ---------------------------------------------------------------
-
-function renderDone() {
-  const s = game.summary;
-  const best = saveBest(s);
-  dom.prompt.textContent = `Off the bus in ${s.busFlips} flip${s.busFlips === 1 ? '' : 's'}`;
-  dom.hint.textContent =
-    best.isNew ? 'Best run yet.' : `Best so far: ${best.penalties} sips in ${best.busFlips} flips.`;
-  dom.doneTitle.textContent = `${s.penalties} sip${s.penalties === 1 ? '' : 's'} total`;
-
-  const rows = [
-    ['Guesses right', `${s.guessesCorrect} / 4`],
-    ['Pyramid cut off the row', s.pyramidReduction],
-    ['Bus row length', s.busLength],
-    ['Bus attempts', s.busAttempts],
-    ['Cards flipped on the bus', s.busFlips],
-    ['Sips', s.penalties],
-  ];
-  dom.summary.replaceChildren(
-    ...rows.flatMap(([label, value]) => {
-      const dt = document.createElement('dt');
-      dt.textContent = label;
-      const dd = document.createElement('dd');
-      dd.textContent = value;
-      return [dt, dd];
-    })
-  );
-
-  setControls([
-    () => button('Play again', { primary: true, key: 'space', onClick: newRun }),
-  ]);
-}
-
-// --- best run (localStorage, best effort) --------------------------------
-
-function loadBest() {
-  try {
-    const raw = localStorage.getItem(BEST_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveBest(summary) {
-  const previous = loadBest();
-  const better =
-    !previous ||
-    summary.penalties < previous.penalties ||
-    (summary.penalties === previous.penalties && summary.busFlips < previous.busFlips);
-
-  const best = better ? { penalties: summary.penalties, busFlips: summary.busFlips } : previous;
-  if (better) {
-    try {
-      localStorage.setItem(BEST_KEY, JSON.stringify(best));
-    } catch {
-      // Private mode or blocked storage: the run still counts, it just is not kept.
-    }
-  }
-  renderBest();
-  return { ...best, isNew: better };
-}
-
-function renderBest() {
-  const best = loadBest();
-  dom.best.textContent = best ? `${best.penalties} sips` : '—';
-}
-
-// --- wiring -------------------------------------------------------------
 
 function render() {
-  renderChrome();
-  if (game.phase === 'guess') renderGuess();
-  else if (game.phase === 'pyramid') renderPyramid();
-  else if (game.phase === 'bus') renderBus();
-  else renderDone();
+  switch (game.phase) {
+    case 'setup':
+      renderSetup();
+      show('setup');
+      break;
+    case 'deal': {
+      const next = game.dealTarget;
+      if (!next) { game.phase = 'table'; render(); return; }
+      passIntent = 'deal';
+      el('pass-name').textContent = next.name;
+      el('pass-note').textContent = 'Everyone else, look away.';
+      el('pass-cancel').classList.add('hidden');
+      show('pass');
+      break;
+    }
+    case 'table':
+      renderTable();
+      show('table');
+      break;
+    case 'respond': {
+      const { giverId: gid, targetId, value } = game.pending;
+      el('respond-title').textContent = `${game.players[targetId].name}, drink ${value}?`;
+      el('respond-note').textContent =
+        `${game.players[gid].name} says they have it. Take it, or make them show you.`;
+      el('respond-card').replaceChildren(cardEl(game.currentCard));
+      show('respond');
+      break;
+    }
+    case 'reveal': {
+      const r = game.lastResolution;
+      const giver = game.players[r.giverId];
+      const challenger = game.players[r.targetId];
+      el('reveal-title').textContent = r.truthful ? `${giver.name} had it` : `${giver.name} was lying`;
+      screens.reveal.classList.toggle('caught', !r.truthful);
+      screens.reveal.classList.toggle('proved', r.truthful);
+      el('reveal-card').replaceChildren(
+        r.proof ? cardEl(r.proof) : Object.assign(document.createElement('div'), {
+          className: 'card empty',
+          textContent: 'nothing',
+        })
+      );
+      el('reveal-note').textContent = r.truthful
+        ? `${challenger.name} drinks ${r.penalty}.`
+        : `${giver.name} drinks ${r.penalty}.`;
+      show('reveal');
+      break;
+    }
+    case 'over': {
+      const losers = game.losers;
+      el('over-note').textContent =
+        losers.length === 1
+          ? `${losers[0].name} is left holding ${losers[0].hand.length} — they lose.`
+          : `Tied on ${losers[0].hand.length}: ${losers.map((p) => p.name).join(', ')}.`;
+      el('reveal-all').replaceChildren(
+        ...game.players.map((p) => {
+          const block = document.createElement('div');
+          block.className = `final${losers.includes(p) ? ' loser' : ''}`;
+          const head = document.createElement('p');
+          head.className = 'final-head';
+          head.textContent = `${p.name} · ${p.hand.length} left · ${p.drinks} drinks`;
+          const row = document.createElement('div');
+          row.className = 'card-row';
+          row.append(...p.hand.map((c) => cardEl(c, { small: true })));
+          block.append(head, row);
+          return block;
+        })
+      );
+      show('over');
+      break;
+    }
+    default:
+      show('setup');
+  }
+  save();
 }
 
-function newRun() {
-  game.reset();
-  busy = false;
-  render();
-}
+// --- wiring --------------------------------------------------------------
 
-document.addEventListener('keydown', (event) => {
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  const key = event.key === ' ' ? 'space' : event.key.toLowerCase();
-  const handler = keyHandlers.find((h) => h.key === key);
-  if (!handler) return;
-  event.preventDefault();
-  handler.run();
+el('add-player').addEventListener('click', () => {
+  if (names.length < MAX_PLAYERS) names.push('');
+  renderSetup();
 });
 
-dom.restart.addEventListener('click', newRun);
+el('start').addEventListener('click', () => {
+  const clean = validNames();
+  if (clean.length < MIN_PLAYERS) {
+    el('setup-warn').textContent = `Need at least ${MIN_PLAYERS} names.`;
+    return;
+  }
+  if (new Set(clean.map((n) => n.toLowerCase())).size !== clean.length) {
+    el('setup-warn').textContent = 'Two people have the same name - make them different.';
+    return;
+  }
+  game = new PartyGame();
+  game.start(clean);
+  render();
+});
 
-renderBest();
+el('pass-confirm').addEventListener('click', () => {
+  if (passIntent === 'deal') {
+    const next = game.dealTarget;
+    if (!next) { render(); return; }
+    handOwner = next;
+    game.markSeen(next.id);
+  }
+  el('hand-owner').textContent = `${handOwner.name}'s hand`;
+  el('hand-cards').replaceChildren(...handOwner.hand.map((c) => cardEl(c)));
+  show('hand');
+  save();
+});
+
+el('pass-cancel').addEventListener('click', () => render());
+
+el('hand-done').addEventListener('click', () => {
+  // Clear the cards out of the DOM before the screen changes, so a slow
+  // repaint can never flash someone else's hand.
+  el('hand-cards').replaceChildren();
+  handOwner = null;
+  render();
+});
+
+el('flip').addEventListener('click', () => {
+  game.flipNext();
+  render();
+});
+
+el('open-give').addEventListener('click', () => {
+  giverId = null;
+  renderPicker();
+  show('give');
+});
+
+el('give-cancel').addEventListener('click', () => {
+  if (giverId !== null) { giverId = null; renderPicker(); return; }
+  render();
+});
+
+function renderPicker() {
+  const choosingTarget = giverId !== null;
+  el('give-title').textContent = choosingTarget ? 'Who drinks?' : "Who's giving?";
+  el('give-note').textContent = choosingTarget
+    ? `${game.players[giverId].name} is giving ${game.currentValue}. Pick a victim.`
+    : 'Tap your own name. Nobody has to prove anything yet.';
+
+  el('give-picker').replaceChildren(
+    ...game.players.map((p) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn pick';
+      btn.textContent = p.name;
+      const blocked = choosingTarget ? p.id === giverId : !game.canGive(p.id);
+      btn.disabled = blocked;
+      if (!choosingTarget && game.hasGiven(p.id)) btn.textContent = `${p.name} (already gave)`;
+      btn.addEventListener('click', () => {
+        if (choosingTarget) {
+          game.give(giverId, p.id);
+          giverId = null;
+          render();
+        } else {
+          giverId = p.id;
+          renderPicker();
+        }
+      });
+      return btn;
+    })
+  );
+}
+
+el('respond-drink').addEventListener('click', () => { game.accept(); render(); });
+el('respond-call').addEventListener('click', () => { game.challenge(); render(); });
+el('reveal-done').addEventListener('click', () => { game.dismissReveal(); render(); });
+
+el('open-peek').addEventListener('click', () => {
+  passIntent = 'peek';
+  el('pass-name').textContent = 'whoever wants a look';
+  el('pass-note').textContent = 'Tap your own name.';
+  el('pass-cancel').classList.remove('hidden');
+  el('give-title').textContent = '';
+  // Reuse the picker markup for choosing who is peeking.
+  el('give-picker').replaceChildren(
+    ...game.players.map((p) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn pick';
+      btn.textContent = p.name;
+      btn.addEventListener('click', () => {
+        handOwner = p;
+        passIntent = 'peek';
+        el('pass-name').textContent = p.name;
+        el('pass-note').textContent = 'Everyone else, look away.';
+        show('pass');
+      });
+      return btn;
+    })
+  );
+  el('give-title').textContent = 'Whose cards?';
+  el('give-note').textContent = 'Tap your own name, then confirm on the next screen.';
+  show('give');
+});
+
+el('finish').addEventListener('click', () => { game.finish(); render(); });
+
+el('again').addEventListener('click', () => {
+  clearSave();
+  game = new PartyGame();
+  giverId = null;
+  handOwner = null;
+  render();
+});
+
+if (!restore()) game = new PartyGame();
+renderSetup();
 render();
